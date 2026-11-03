@@ -11,7 +11,7 @@ from employer_feeds import configured_boards, fetch_board, relevant, FeedError
 from public_feeds import configured_public_feeds, fetch_public_feed, PublicFeedError
 from monitoring import upcoming_deadlines, notify_deadlines
 
-app app = Flask(
+app = Flask(
     __name__,
     template_folder=".",
     static_folder="."
