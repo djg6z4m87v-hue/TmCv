@@ -11,7 +11,11 @@ from employer_feeds import configured_boards, fetch_board, relevant, FeedError
 from public_feeds import configured_public_feeds, fetch_public_feed, PublicFeedError
 from monitoring import upcoming_deadlines, notify_deadlines
 
-app = Flask(__name__)
+app app = Flask(
+    __name__,
+    template_folder=".",
+    static_folder="."
+)
 app.secret_key = os.getenv('SECRET_KEY', 'development-only-change-me')
 if os.getenv('APP_USERNAME') and not os.getenv('APP_PASSWORD') or os.getenv('APP_PASSWORD') and not os.getenv('APP_USERNAME'):
     raise RuntimeError('Set both APP_USERNAME and APP_PASSWORD, or neither')
