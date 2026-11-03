@@ -4,36 +4,35 @@ import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from jobs import search_jobs, CATEGORIES
+from jobs import search_jobs, CATEGORIES, JobSearchError
 
 MIN_SALARY = 27000
 DAILY_TARGET = 10
+LOCATION = "United Kingdom"
 
 def run():
     now = datetime.now(ZoneInfo("Europe/London"))
     candidates = {}
+    errors = []
 
     for category, queries in CATEGORIES.items():
         for query in queries:
             try:
                 jobs = search_jobs(
                     query=query,
-                    location="",
-                    minimum=MIN_SALARY,
+                    location=LOCATION,
                     count=50
                 )
-            except Exception as exc:
-                print(
-                    f"Search failed for {query}: "
-                    f"{type(exc).__name__}: {exc}",
-                    flush=True
-                )
+            except JobSearchError as exc:
+                errors.append(f"{query}: {exc}")
                 continue
 
             for job in jobs:
                 salary = job.get("salary_max")
+
                 if not job.get("salary_verified"):
                     continue
+
                 if salary is None or salary < MIN_SALARY:
                     continue
 
@@ -42,6 +41,7 @@ def run():
                     continue
 
                 candidates[identifier] = {
+                    "source_id": identifier,
                     "title": job.get("title"),
                     "company": job.get("company"),
                     "location": job.get("location"),
@@ -50,15 +50,28 @@ def run():
                     "category": category,
                 }
 
-    shortlist = list(candidates.values())
+    shortlist = sorted(
+        candidates.values(),
+        key=lambda job: job["salary_max"],
+        reverse=True
+    )[:DAILY_TARGET]
 
-    print(json.dumps({
+    result = {
         "run_date": now.date().isoformat(),
+        "timezone": "Europe/London",
         "target": DAILY_TARGET,
-        "candidates_found": len(shortlist),
-        "shortlist": shortlist[:DAILY_TARGET],
+        "minimum_salary": MIN_SALARY,
+        "location": LOCATION,
+        "candidates_found": len(candidates),
+        "shortlist": shortlist,
         "applications_submitted": 0,
-    }, indent=2), flush=True)
+        "errors": errors,
+    }
+
+    print(json.dumps(result, indent=2), flush=True)
+
+    if errors and not candidates:
+        raise RuntimeError("All searches failed or no candidates were returned; inspect errors above.")
 
 if __name__ == "__main__":
     run()
