@@ -5,7 +5,7 @@ from urllib.parse import urlencode, urlparse
 import hashlib
 from flask import Flask, render_template, request, redirect, url_for, flash, Response, send_from_directory
 from database import connect, init_db
-from jobs import search_jobs, JobSearchError, CATEGORIES, LOCATIONS
+from jobs import search_jobs, JobSearchError, CATEGORIES, LOCATIONS, browser_search_url
 from matching import score, DEFAULT_CV
 from employer_feeds import configured_boards, fetch_board, relevant, FeedError
 from public_feeds import configured_public_feeds, fetch_public_feed, PublicFeedError
@@ -66,21 +66,21 @@ def health():
 
 @app.get('/')
 @require_auth
-def home():
+def home(web_results=None, web_query='legal administrator', web_location='Nottingham'):
     with connect() as db:
         settings = {r['key']: r['value'] for r in db.execute('SELECT key,value FROM settings')}
         status = request.args.get('status', '')
         if status in STATUSES:
-            rows = db.execute('SELECT * FROM jobs WHERE status=? ORDER BY match_score DESC, id DESC', (status,)).fetchall()
+            rows = db.execute("SELECT * FROM jobs WHERE source_id NOT LIKE 'adzuna:%' AND status=? ORDER BY match_score DESC, id DESC", (status,)).fetchall()
         else:
-            rows = db.execute('SELECT * FROM jobs ORDER BY match_score DESC, id DESC').fetchall()
+            rows = db.execute("SELECT * FROM jobs WHERE source_id NOT LIKE 'adzuna:%' ORDER BY match_score DESC, id DESC").fetchall()
     try:
         feeds = configured_boards()
         feed_error = ''
     except FeedError as exc:
         feeds = []
         feed_error = str(exc)
-    return render_template('index.html', feeds=feeds, feed_error=feed_error, jobs=rows, statuses=STATUSES, selected=status, categories=CATEGORIES, locations=LOCATIONS, settings=settings, employers=EMPLOYERS, deadline_alerts=upcoming_deadlines(), public_feeds=configured_public_feeds_safe())
+    return render_template('index.html', feeds=feeds, feed_error=feed_error, jobs=rows, statuses=STATUSES, selected=status, categories=CATEGORIES, locations=LOCATIONS, settings=settings, employers=EMPLOYERS, web_results=web_results, web_query=web_query, web_location=web_location, browser_search_url=browser_search_url, deadline_alerts=upcoming_deadlines(), public_feeds=configured_public_feeds_safe())
 
 @app.post('/settings')
 @require_auth
@@ -112,6 +112,7 @@ def import_jobs():
     cv = settings.get('cv_text') or DEFAULT_CV
     added = 0
     errors = []
+    candidates = {}
     for query in CATEGORIES[category]:
         try:
             results = search_jobs(query, location)
@@ -120,8 +121,9 @@ def import_jobs():
             continue
         with connect() as db:
             for j in results:
-                # Strict: missing or predicted salary cannot pass a verified salary threshold.
-                if not j['salary_verified'] or j['salary_max'] is None or j['salary_max'] < minimum:
+                candidates[j['source_id']] = j
+                # Automatic imports need a published annual salary floor.
+                if not j['salary_verified'] or j['salary_min'] is None or j['salary_min'] < minimum:
                     continue
                 j['category'] = category
                 j['match_score'] = score(j, cv)
@@ -129,8 +131,17 @@ def import_jobs():
                     (source_id,title,company,location,category,url,description,salary_min,salary_max,salary_verified,match_score)
                     VALUES (:source_id,:title,:company,:location,:category,:url,:description,:salary_min,:salary_max,:salary_verified,:match_score)''', j)
                 added += cur.rowcount
-    flash(f'Imported {added} new verified-salary jobs.' + (' Errors: ' + '; '.join(errors) if errors else ''), 'error' if errors else 'success')
-    return redirect(url_for('home'))
+    flash(f'Web search checked {len(candidates)} employer vacancies; saved {added} new jobs meeting your salary minimum.' + (' ' + ' '.join(dict.fromkeys(errors)) if errors else ''), 'error' if errors else 'success')
+    return home(web_results=list(candidates.values()), web_query=CATEGORIES[category][0], web_location=location)
+
+@app.get('/web-search')
+@require_auth
+def open_web_search():
+    category = request.args.get('category', 'Legal administration')
+    location = request.args.get('location', 'Nottingham')
+    if category not in CATEGORIES or location not in LOCATIONS:
+        return 'Choose a valid category and location.', 400
+    return redirect(browser_search_url(CATEGORIES[category][0], location), code=303)
 
 @app.post('/jobs/<int:job_id>/update')
 @require_auth

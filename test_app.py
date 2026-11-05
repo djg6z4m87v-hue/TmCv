@@ -31,7 +31,7 @@ def test_preferences(client):
 def test_import_dedup_and_predicted_filter(client, monkeypatch):
     import app
     def fake_search(query,location):
-        return [dict(source_id='adzuna:1',title='Legal administrator',company='Firm',location=location,url='https://example.org',description='legal case management',salary_min=30000,salary_max=34000,salary_verified=1),dict(source_id='adzuna:2',title='Other',company='Firm',location=location,url='https://example.org',description='',salary_min=None,salary_max=None,salary_verified=0)]
+        return [dict(source_id='web:1',title='Legal administrator',company='Firm',location=location,url='https://example.org',description='legal case management',salary_min=30000,salary_max=34000,salary_verified=1),dict(source_id='web:2',title='Other',company='Firm',location=location,url='https://example.org',description='',salary_min=None,salary_max=None,salary_verified=0)]
     monkeypatch.setattr(app,'search_jobs',fake_search)
     for _ in range(2):
         client.post('/import',data={'category':'Legal administration','location':'Nottingham'})
@@ -93,3 +93,30 @@ def test_iphone_install_assets_and_private_data(client, monkeypatch):
     assert client.get('/static/app.py').status_code == 404
     assert client.get('/static/careerpilot.db').status_code == 404
 
+
+
+def test_web_fallback_uses_selected_category_and_location(client):
+    r = client.get('/web-search?category=Paralegal+%2F+casework&location=London')
+    assert r.status_code == 303
+    assert 'google.com/search?' in r.location
+    assert 'paralegal+London' in r.location
+    assert '-site%3Aadzuna.co.uk' in r.location
+
+
+def test_low_floor_and_missing_salary_browse_only(client, monkeypatch):
+    import app
+    def search(query, location):
+        return [dict(source_id='web:low', title='Paralegal', company='Firm',location=location,
+                     url='https://jobs.nhs.uk/job/1',description='Work', salary_min=25000,
+                     salary_max=35000, salary_verified=1),
+                dict(source_id='web:unknown',title='Legal officer',company='Trust',location=location,
+                     url='https://jobs.nhs.uk/job/2',description='Work',salary_min=None,
+                     salary_max=None,salary_verified=0)]
+    monkeypatch.setattr(app, 'search_jobs', search)
+    response = client.post('/import', data={'category':'Legal administration', 'location':'Nottingham'})
+    assert b'Web search results' in response.data
+    assert b'Legal officer' in response.data
+    assert b'excluded from automatic imports' in response.data
+    from database import connect
+    with connect() as db:
+        assert db.execute('SELECT count(*) FROM jobs').fetchone()[0] == 0

@@ -64,7 +64,7 @@ Required production variables:
 - `SECRET_KEY`: strong stable Flask/encryption secret.
 - `APP_USERNAME`, `APP_PASSWORD`: both required for private owner access over HTTPS.
 - `DATABASE_PATH`: persistent SQLite location.
-- `ADZUNA_APP_ID`, `ADZUNA_APP_KEY`: job search credentials.
+- `WEB_SEARCH_BACKEND`: optional DDGS engine selection; defaults to `bing,duckduckgo`. No search API key is required.
 - `PORT`: assigned by the host (8080 default).
 
 Optional: `OPENAI_API_KEY`, `OPENAI_MODEL` (defaults to `gpt-4.1-mini`).
@@ -98,10 +98,16 @@ daily limits, CSRF and private downloads. No test submits a real application.
 
 ## Search and legacy integrations
 
-The vacancies dashboard searches Adzuna and imports explicitly non-predicted
-salary data; its historic manual importer compares salary maximum. **Application
-eligibility uses salary minimum**, so a range starting below the chosen floor
-will be blocked even if the manual importer saved it. Verify employer adverts.
+The vacancies dashboard and background discovery search the web using DDGS.
+Results are restricted to approved employer and employer-hosted recruitment domains.
+Each candidate page is fetched with bounded requests. Only a single JobPosting
+record can qualify for automatic import; category pages and pages without
+structured salary data remain browse-only. Inaccessible and expired adverts are excluded. Annual GBP baseSalary data must contain a minimum meeting the saved
+threshold before automatic import or queuing. Missing salaries are never estimated.
+Open web search provides a browser fallback when an engine or employer site blocks
+automated access. Search coverage is incomplete, and engines can rate-limit requests.
+Adzuna is no longer called. Existing Adzuna jobs stay in storage but are hidden from
+the active dashboard/queue picker; existing queued applications need a direct URL.
 
 Daily application discovery searches one query per category, ranks CV keyword
 matches and queues up to ten; this is a discovery cap, not a submission promise.

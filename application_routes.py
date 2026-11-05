@@ -40,7 +40,7 @@ def register(app, require_auth):
             rows = [dict(r) for r in db.execute('SELECT a.*,j.title,j.company,j.salary_min,j.salary_max FROM applications a JOIN jobs j ON j.id=a.job_id ORDER BY a.id DESC LIMIT 200')]
             events = db.execute('SELECT e.*,j.title FROM application_events e JOIN applications a ON a.id=e.application_id JOIN jobs j ON j.id=a.job_id ORDER BY e.id DESC LIMIT 30').fetchall()
             counts = {r['state']: r['n'] for r in db.execute('SELECT state,COUNT(*) n FROM applications GROUP BY state')}
-            jobs = db.execute("SELECT id,title,company FROM jobs WHERE id NOT IN (SELECT job_id FROM applications) AND status NOT IN ('Applied','Offer','Interview','Rejected','Withdrawn') ORDER BY match_score DESC LIMIT 100").fetchall()
+            jobs = db.execute("SELECT id,title,company FROM jobs WHERE source_id NOT LIKE 'adzuna:%' AND id NOT IN (SELECT job_id FROM applications) AND status NOT IN ('Applied','Offer','Interview','Rejected','Withdrawn') ORDER BY match_score DESC LIMIT 100").fetchall()
         for row in rows:
             row['questions_data'] = json.loads(row['questions'])
             row['draft_answers_data'] = json.loads(row['draft_answers'])

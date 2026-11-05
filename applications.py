@@ -103,6 +103,8 @@ def enqueue(job_id, direct_url=None):
         if job['status'] in ('Applied', 'Offer', 'Interview', 'Rejected', 'Withdrawn'):
             raise ValueError('This vacancy already has a completed application status.')
         url = canonical_url(direct_url or job['url'])
+        if 'adzuna.' in (urlparse(url).hostname or ''):
+            raise ValueError('Use the direct employer vacancy URL or find a fresh result with web search.')
         old = db.execute('SELECT id FROM applications WHERE job_id=? OR canonical_url=?', (job_id, url)).fetchone()
         if old:
             return old['id']
@@ -158,6 +160,8 @@ def profile_fingerprint(config=None):
 
 def eligibility(app, config=None):
     config = config or settings()
+    if 'adzuna.' in (urlparse(app['canonical_url']).hostname or ''):
+        return 'Replace the old Adzuna link with a direct employer application URL, or run web search.'
     minimum = max(27000, int(config.get('min_salary', '27000')))
     if not app['salary_verified'] or app['salary_min'] is None or app['salary_min'] < minimum:
         return f'Confirm an advertised salary starting at £{minimum:,} or above.'
@@ -348,7 +352,7 @@ def discover():
                 if job['match_score'] >= 30:
                     matches[job['source_id']] = job
         except JobSearchError:
-            errors.append(f'{category}: search unavailable; check your search connection.')
+            errors.append(f'{category}: web search unavailable; use the vacancies dashboard to browse web results.')
     queued = 0
     for job in sorted(matches.values(), key=lambda j: j['match_score'], reverse=True)[:10]:
         with connect() as db:

@@ -1,8 +1,21 @@
-"""Adzuna UK integration. Estimated salaries are NEVER treated as verified."""
+"""Web discovery of direct employer vacancies; no Adzuna integration."""
+import hashlib
+import html
+import ipaddress
+import json
 import os
-import requests
+import socket
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+from urllib.parse import urlencode, urlparse, urlunparse
 
-API = 'https://api.adzuna.com/v1/api/jobs/gb/search/1'
+import requests
+from ddgs import DDGS
+from lxml import html as html_parser
+from lxml.etree import ParserError
+
 CATEGORIES = {
     'Legal administration': ['legal administrator', 'legal support officer'],
     'Paralegal / casework': ['paralegal', 'legal caseworker'],
@@ -13,41 +26,210 @@ CATEGORIES = {
     'Public sector': ['council administrator', 'public sector caseworker'],
 }
 LOCATIONS = ['Nottingham', 'Derby', 'Leicester', 'Birmingham', 'London', 'United Kingdom']
+# Employer domains and employer-hosted recruitment platforms. No job aggregators.
+EMPLOYER_DOMAINS = (
+    'gov.uk', 'jobs.nhs.uk', 'nhs.scot', 'trac.jobs', 'jobs.lever.co',
+    'jobs.eu.lever.co', 'boards.greenhouse.io', 'job-boards.greenhouse.io',
+    'myworkdayjobs.com', 'brownejacobson.com', 'flintbishop.co.uk',
+    'geldards.com', 'bradysolicitors.com', 'chattertons.com', 'potterclarkson.com',
+)
+EXCLUDED = ('recruitment agency', 'on behalf of our client', 'recruitment services',
+            'call centre', 'call center', 'telesales')
+_CACHE = {}
+_LOCK = threading.Lock()
+
 
 class JobSearchError(Exception):
     pass
 
-def search_jobs(query, location, count=20):
-    app_id, key = os.getenv('ADZUNA_APP_ID'), os.getenv('ADZUNA_APP_KEY')
-    if not app_id or not key:
-        raise JobSearchError('Adzuna credentials missing. Configure ADZUNA_APP_ID and ADZUNA_APP_KEY.')
-    params = {'app_id': app_id, 'app_key': key, 'what': query, 'results_per_page': min(count, 50), 'content-type': 'application/json'}
-    if location != 'United Kingdom':
-        params['where'] = location
+
+def direct_url(value):
+    """Accept only HTTPS URLs on approved employer/recruitment hosts."""
     try:
-        response = requests.get(API, params=params, timeout=20)
-        response.raise_for_status()
-        data = response.json()
-    except requests.HTTPError as exc:
-        status = exc.response.status_code if exc.response is not None else 'unknown'
-        labels = {400: 'Invalid search', 401: 'Invalid API credentials', 403: 'API access denied', 429: 'API rate limit exceeded'}
-        raise JobSearchError(f'Adzuna HTTP {status}: {labels.get(status, "Request failed")}') from exc
-    except (requests.RequestException, ValueError) as exc:
-        raise JobSearchError(f'Adzuna request failed: {type(exc).__name__}') from exc
-    jobs = []
-    for j in data.get('results', []):
-        if not j.get('id') or not j.get('title') or not j.get('redirect_url'):
-            continue
-        # Adzuna salary_is_predicted is typically '1'/'0' or bool; absent is not verified.
-        predicted = j.get('salary_is_predicted')
-        verified = predicted in (0, '0', False) and predicted is not None
-        jobs.append({
-            'source_id': 'adzuna:' + str(j['id']), 'title': j['title'],
-            'company': (j.get('company') or {}).get('display_name', ''),
-            'location': (j.get('location') or {}).get('display_name', location),
-            'url': j['redirect_url'], 'description': j.get('description') or '',
-            'salary_min': j.get('salary_min') if verified else None,
-            'salary_max': j.get('salary_max') if verified else None,
-            'salary_verified': int(verified),
-        })
-    return jobs
+        p = urlparse(value)
+        host = (p.hostname or '').lower()
+        if p.scheme != 'https' or p.username or p.password or p.port not in (None, 443):
+            return None
+        if not any(host == d or host.endswith('.' + d) for d in EMPLOYER_DOMAINS):
+            return None
+        # Keep application query identifiers; remove fragments only.
+        return urlunparse(('https', host, p.path or '/', '', p.query, ''))
+    except (TypeError, ValueError):
+        return None
+
+
+def query_text(query, location):
+    terms = f'{query[:150]} {location[:100]} vacancy jobs'
+    return terms + ' -site:adzuna.co.uk -site:adzuna.com -site:indeed.com -site:reed.co.uk -site:totaljobs.com -recruitment -agency'
+
+
+def browser_search_url(query, location):
+    return 'https://www.google.com/search?' + urlencode({'q': query_text(query, location)})
+
+
+def _public_host(host):
+    try:
+        addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+        return bool(addresses) and all(ipaddress.ip_address(a[4][0]).is_global for a in addresses)
+    except (OSError, ValueError):
+        return False
+
+
+def fetch_page(url):
+    """Bounded GETs; validate each redirect and never forward credentials."""
+    for _ in range(4):
+        url = direct_url(url)
+        if not url or not _public_host(urlparse(url).hostname):
+            return None
+        try:
+            with requests.get(url, timeout=(3, 6), allow_redirects=False, stream=True,
+                              headers={'User-Agent': 'Careerpilot/1.0 vacancy reader', 'Accept': 'text/html'}) as response:
+                if response.status_code in (301, 302, 303, 307, 308):
+                    from urllib.parse import urljoin
+                    url = urljoin(url, response.headers.get('Location', ''))
+                    continue
+                if response.status_code != 200 or 'html' not in response.headers.get('Content-Type', '').lower():
+                    return None
+                body = bytearray()
+                for block in response.iter_content(32768):
+                    body.extend(block)
+                    if len(body) > 1_500_000:
+                        return None
+                return url, bytes(body)
+        except requests.RequestException:
+            return None
+    return None
+
+
+def _postings(value):
+    if isinstance(value, list):
+        for item in value:
+            yield from _postings(item)
+    elif isinstance(value, dict):
+        kind = value.get('@type', [])
+        if kind == 'JobPosting' or isinstance(kind, list) and 'JobPosting' in kind:
+            yield value
+        yield from _postings(value.get('@graph', []))
+
+
+def _text(value):
+    if not isinstance(value, str) or not value.strip():
+        return ''
+    try:
+        return ' '.join(html_parser.fromstring(value).text_content().split())
+    except (ValueError, TypeError, ParserError):
+        return html.unescape(value).strip()
+
+
+def _salary(post):
+    salary = post.get('baseSalary')
+    if not isinstance(salary, dict) or salary.get('currency') != 'GBP':
+        return None, None
+    value = salary.get('value')
+    if not isinstance(value, dict) or str(value.get('unitText', '')).upper() not in ('YEAR', 'ANNUAL'):
+        return None, None
+    try:
+        low = float(value.get('minValue', value.get('value')))
+        high = float(value.get('maxValue', value.get('value', low)))
+        import math
+        if not math.isfinite(low) or not math.isfinite(high) or low <= 0 or high < low:
+            return None, None
+        return low, high
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _inspect(result, location):
+    url = direct_url(result.get('href', ''))
+    if not url:
+        return None
+    title, description = _text(result.get('title', '')), _text(result.get('body', ''))
+    if not title or any(word in (title + ' ' + description).lower() for word in EXCLUDED):
+        return None
+    page = fetch_page(url)
+    if not page:
+        return None  # Never offer a known broken or inaccessible page as a vacancy.
+    url, body = page
+    low = high = None
+    company = urlparse(url).hostname
+    try:
+        root = html_parser.fromstring(body)
+        postings = []
+        for script in root.xpath('//script[@type="application/ld+json"]/text()'):
+            try:
+                postings.extend(_postings(json.loads(script)))
+            except (ValueError, TypeError):
+                continue
+        # Category/search pages may list many jobs. Keep these out of the shortlist.
+        if len(postings) != 1:
+            return {'source_id': 'web:' + hashlib.sha256(url.encode()).hexdigest(),
+                    'title': title[:200], 'company': company, 'location': location,
+                    'url': url, 'description': description[:15000], 'salary_min': None,
+                    'salary_max': None, 'salary_verified': 0, 'result_kind': 'Employer page'}
+        post = postings[0]
+        expires = post.get('validThrough')
+        if expires:
+            try:
+                end = datetime.fromisoformat(expires.replace('Z', '+00:00'))
+                if end.tzinfo is None:
+                    end = end.replace(tzinfo=timezone.utc)
+                if end < datetime.now(timezone.utc):
+                    return None
+            except (ValueError, TypeError, AttributeError):
+                return None
+        title = _text(post.get('title')) or title
+        description = _text(post.get('description'))
+        organisation = post.get('hiringOrganization') or {}
+        if isinstance(organisation, dict):
+            company = _text(organisation.get('name')) or company
+        place = post.get('jobLocation') or {}
+        if isinstance(place, list):
+            place = place[0] if place else {}
+        address = place.get('address', {}) if isinstance(place, dict) else {}
+        if isinstance(address, dict):
+            location = ', '.join(str(address.get(k) or '') for k in ('addressLocality', 'addressRegion') if address.get(k)) or location
+        low, high = _salary(post)
+    except (ValueError, TypeError, KeyError, ParserError):
+        return None
+    if any(word in (title + ' ' + company + ' ' + description).lower() for word in EXCLUDED):
+        return None
+    return {'source_id': 'web:' + hashlib.sha256(url.encode()).hexdigest(), 'title': title[:200],
+            'company': company[:200], 'location': location[:200], 'url': url,
+            'description': description[:15000], 'salary_min': low, 'salary_max': high,
+            'salary_verified': int(low is not None)}
+
+
+def search_jobs(query, location, count=20):
+    """Search the web, then read employer JobPosting data. No paid API key needed."""
+    key = (query[:150], location[:100], min(max(count, 1), 20))
+    with _LOCK:
+        cached = _CACHE.get(key)
+        if cached and time.monotonic() - cached[0] < 600:
+            return [dict(row) for row in cached[1]]
+    # General web search first; a short public-employer query provides a fallback.
+    engine = DDGS(timeout=8)
+    results = []
+    failed = False
+    for terms in (query_text(query, location), f'{query[:150]} {location[:100]} jobs site:gov.uk'):
+        try:
+            results = engine.text(terms, region='uk-en', max_results=min(max(count, 1), 20),
+                                  backend=os.getenv('WEB_SEARCH_BACKEND', 'bing,duckduckgo'))
+            if any(direct_url(row.get('href', '')) for row in results):
+                break
+        except Exception:
+            failed = True
+    if not results and failed:
+        raise JobSearchError('Web search is temporarily unavailable. Use Open web search below or try again shortly.')
+    seen, candidates = set(), []
+    for result in results:
+        url = direct_url(result.get('href', ''))
+        if url and url not in seen:
+            seen.add(url)
+            candidates.append(result)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        jobs = [job for job in pool.map(lambda r: _inspect(r, location), candidates[:8]) if job]
+    with _LOCK:
+        if len(_CACHE) >= 100:
+            _CACHE.clear()
+        _CACHE[key] = (time.monotonic(), jobs)
+    return [dict(row) for row in jobs]
