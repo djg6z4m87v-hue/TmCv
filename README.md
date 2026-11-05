@@ -103,6 +103,8 @@ Nottingham searches Nottinghamshire County Council's live Tal.net job board.
 United Kingdom also searches relevant categories on myjobscotland. The supported
 sources are shown in the dashboard. Other locations have a browser web-search
 option until a direct source is connected. Searches include related role titles.
+When local sources return no matches, wider UK results are explicitly labelled and
+not automatically saved as local vacancies. Select United Kingdom to import them.
 
 The old unauthenticated search-engine scraping is disabled by default because
 engines rejected requests from the hosting network. Optional general discovery can

@@ -72,7 +72,7 @@ def text(node):
 def topic(query):
     q = query.lower()
     if any(s in q for s in ('revenu', 'recover', 'debt', 'collect')):
-        return ('revenu', 'recover', 'income', 'collection', 'council tax', 'finance', 'account'), '2087'
+        return ('revenu', 'debt recovery', 'recoveries', 'income', 'collection', 'council tax', 'finance', 'account'), '2087'
     if any(s in q for s in ('contract', 'procure')):
         return ('contract', 'procure', 'commercial'), '2781'
     if any(s in q for s in ('compliance', 'investigat', 'regulatory')):
@@ -216,6 +216,7 @@ def scotland_search(query, location, count):
     _, root = cached_read(url)
     anchors = root.xpath('//a[contains(@href,"/jobs/")]')
     links = [a.get('href') for a in anchors if any(w in text(a).lower() for w in words)]
+    links.sort(key=lambda link: sum(w in next((text(a).lower() for a in anchors if a.get('href') == link), '') for w in words) - 3 * bool(re.search(r'manager|head |director|senior', link, re.I)), reverse=True)
     jobs = []
     def inspect(link):
         try:
@@ -241,4 +242,14 @@ def search(query, location, count=20):
             diagnostics.append(status)
             for job in jobs:
                 results[job['source_id']] = job
+    if not results and location != 'United Kingdom':
+        try:
+            broader, status = scotland_search(query, 'United Kingdom', count)
+            status['scope'] = 'UK-wide alternatives'
+            diagnostics.append(status)
+            for job in broader:
+                job['search_scope'] = 'UK-wide alternative'
+                results[job['source_id']] = job
+        except SourceError:
+            diagnostics.append({'source': 'myjobscotland', 'status': 'unavailable', 'scope': 'UK-wide alternatives'})
     return list(results.values()), diagnostics

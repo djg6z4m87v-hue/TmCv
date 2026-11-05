@@ -125,6 +125,8 @@ def import_jobs():
         with connect() as db:
             for j in results:
                 candidates[j['source_id']] = j
+                if j.get('search_scope') == 'UK-wide alternative' and location != 'United Kingdom':
+                    continue
                 # Automatic imports need a published annual salary floor.
                 if not j['salary_verified'] or j['salary_min'] is None or j['salary_min'] < minimum:
                     continue
@@ -135,6 +137,9 @@ def import_jobs():
                     (source_id,title,company,location,category,url,description,salary_min,salary_max,salary_verified,match_score,deadline)
                     VALUES (:source_id,:title,:company,:location,:category,:url,:description,:salary_min,:salary_max,:salary_verified,:match_score,:deadline)''', j)
                 added += cur.rowcount
+    wider = any(j.get('search_scope') == 'UK-wide alternative' for j in candidates.values())
+    if wider:
+        flash('No matching local adverts were found in the connected sources. Showing wider UK alternatives; select United Kingdom to save eligible matches.', 'success')
     if errors and not candidates:
         flash('Search could not complete. ' + ' '.join(dict.fromkeys(errors)), 'error')
     else:

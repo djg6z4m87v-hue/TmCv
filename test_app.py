@@ -120,3 +120,16 @@ def test_low_floor_and_missing_salary_browse_only(client, monkeypatch):
     from database import connect
     with connect() as db:
         assert db.execute('SELECT count(*) FROM jobs').fetchone()[0] == 0
+
+
+def test_wider_search_alternatives_are_not_saved_as_local(client, monkeypatch):
+    import app
+    from database import connect
+    job=dict(source_id='web:uk-alternative',title='Revenues Assistant',company='Council',location='Kilmarnock',
+             url='https://myjobscotland.gov.uk/councils/example/jobs/1',description='Revenues casework',
+             salary_min=27937,salary_max=29247,salary_verified=1,search_scope='UK-wide alternative')
+    monkeypatch.setattr(app,'search_jobs',lambda *args:[dict(job)])
+    response=client.post('/import',data={'category':'Revenues / recovery','location':'Nottingham'})
+    assert b'UK-wide alternative' in response.data
+    with connect() as db:
+        assert db.execute('SELECT count(*) FROM jobs').fetchone()[0] == 0

@@ -84,3 +84,19 @@ def test_category_and_location_are_preserved_after_search(tmp_path, monkeypatch)
     assert body.xpath('//select[@name="location"]/option[@selected]/text()') == ['Nottingham']
     assert b'80 listings checked' in response.data
     assert b'No matching' not in response.data  # No claim that no UK roles exist.
+
+
+def test_debt_recovery_does_not_match_nature_recovery():
+    terms, _ = web.topic('debt recovery officer')
+    assert not any(t in 'local nature recovery strategy officer' for t in terms)
+    assert any(t in 'revenues & collections assistant' for t in terms)
+
+
+def test_wider_alternatives_are_labelled(monkeypatch):
+    monkeypatch.setattr(web, 'notts_search', lambda *args: ([], {'source':'Council','status':'available','listed':50}))
+    def scotland(q, loc, count):
+        return ([{'source_id':'web:alternative','title':'Revenues Assistant'}] if loc == 'United Kingdom' else [],
+                {'source':'myjobscotland','status':'available' if loc == 'United Kingdom' else 'outside selected area'})
+    monkeypatch.setattr(web,'scotland_search',scotland)
+    rows, diagnostics=web.search('revenues officer','Nottingham')
+    assert rows[0]['search_scope'] == 'UK-wide alternative'
