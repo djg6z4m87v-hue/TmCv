@@ -66,7 +66,7 @@ def health():
 
 @app.get('/')
 @require_auth
-def home(web_results=None, web_query='legal administrator', web_location='Nottingham'):
+def home(web_results=None, web_query='legal administrator', web_location='Nottingham', selected_category='Legal administration', search_diagnostics=None):
     with connect() as db:
         settings = {r['key']: r['value'] for r in db.execute('SELECT key,value FROM settings')}
         status = request.args.get('status', '')
@@ -80,7 +80,7 @@ def home(web_results=None, web_query='legal administrator', web_location='Nottin
     except FeedError as exc:
         feeds = []
         feed_error = str(exc)
-    return render_template('index.html', feeds=feeds, feed_error=feed_error, jobs=rows, statuses=STATUSES, selected=status, categories=CATEGORIES, locations=LOCATIONS, settings=settings, employers=EMPLOYERS, web_results=web_results, web_query=web_query, web_location=web_location, browser_search_url=browser_search_url, deadline_alerts=upcoming_deadlines(), public_feeds=configured_public_feeds_safe())
+    return render_template('index.html', feeds=feeds, feed_error=feed_error, jobs=rows, statuses=STATUSES, selected=status, categories=CATEGORIES, locations=LOCATIONS, settings=settings, employers=EMPLOYERS, web_results=web_results, web_query=web_query, web_location=web_location, browser_search_url=browser_search_url, selected_category=selected_category, search_diagnostics=search_diagnostics or [], deadline_alerts=upcoming_deadlines(), public_feeds=configured_public_feeds_safe())
 
 @app.post('/settings')
 @require_auth
@@ -113,9 +113,12 @@ def import_jobs():
     added = 0
     errors = []
     candidates = {}
+    diagnostics = {}
     for query in CATEGORIES[category]:
         try:
             results = search_jobs(query, location)
+            for diagnostic in getattr(results, 'diagnostics', []):
+                diagnostics[diagnostic['source']] = diagnostic
         except JobSearchError as exc:
             errors.append(f'{query}: {exc}')
             continue
@@ -125,14 +128,18 @@ def import_jobs():
                 # Automatic imports need a published annual salary floor.
                 if not j['salary_verified'] or j['salary_min'] is None or j['salary_min'] < minimum:
                     continue
+                j.setdefault('deadline', '')
                 j['category'] = category
                 j['match_score'] = score(j, cv)
                 cur = db.execute('''INSERT OR IGNORE INTO jobs
-                    (source_id,title,company,location,category,url,description,salary_min,salary_max,salary_verified,match_score)
-                    VALUES (:source_id,:title,:company,:location,:category,:url,:description,:salary_min,:salary_max,:salary_verified,:match_score)''', j)
+                    (source_id,title,company,location,category,url,description,salary_min,salary_max,salary_verified,match_score,deadline)
+                    VALUES (:source_id,:title,:company,:location,:category,:url,:description,:salary_min,:salary_max,:salary_verified,:match_score,:deadline)''', j)
                 added += cur.rowcount
-    flash(f'Web search checked {len(candidates)} employer vacancies; saved {added} new jobs meeting your salary minimum.' + (' ' + ' '.join(dict.fromkeys(errors)) if errors else ''), 'error' if errors else 'success')
-    return home(web_results=list(candidates.values()), web_query=CATEGORIES[category][0], web_location=location)
+    if errors and not candidates:
+        flash('Search could not complete. ' + ' '.join(dict.fromkeys(errors)), 'error')
+    else:
+        flash(f'Found {len(candidates)} live employer adverts, including related roles; saved {added} new jobs meeting your salary minimum.', 'success')
+    return home(web_results=list(candidates.values()), web_query=CATEGORIES[category][0], web_location=location, selected_category=category, search_diagnostics=list(diagnostics.values()))
 
 @app.get('/web-search')
 @require_auth

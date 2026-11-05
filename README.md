@@ -98,14 +98,21 @@ daily limits, CSRF and private downloads. No test submits a real application.
 
 ## Search and legacy integrations
 
-The vacancies dashboard and background discovery search the web using DDGS.
-Results are restricted to approved employer and employer-hosted recruitment domains.
-Each candidate page is fetched with bounded requests. Only a single JobPosting
-record can qualify for automatic import; category pages and pages without
-structured salary data remain browse-only. Inaccessible and expired adverts are excluded. Annual GBP baseSalary data must contain a minimum meeting the saved
-threshold before automatic import or queuing. Missing salaries are never estimated.
-Open web search provides a browser fallback when an engine or employer site blocks
-automated access. Search coverage is incomplete, and engines can rate-limit requests.
+The dashboard and background discovery read official employer vacancy websites directly.
+Nottingham searches Nottinghamshire County Council's live Tal.net job board.
+United Kingdom also searches relevant categories on myjobscotland. The supported
+sources are shown in the dashboard. Other locations have a browser web-search
+option until a direct source is connected. Searches include related role titles.
+
+The old unauthenticated search-engine scraping is disabled by default because
+engines rejected requests from the hosting network. Optional general discovery can
+be enabled with ENABLE_GENERAL_WEB_SEARCH=1; it is not required for official sources.
+Each advert is read for its published salary and closing date. Expired adverts are
+excluded; missing or pro-rata salary data never passes the automatic salary filter.
+Provider failures are distinct from a successful search with no matching roles.
+At startup, the worker runs read-only sample searches and logs actual role counts.
+These probes never save jobs or enqueue applications.
+
 Adzuna is no longer called. Existing Adzuna jobs stay in storage but are hidden from
 the active dashboard/queue picker; existing queued applications need a direct URL.
 

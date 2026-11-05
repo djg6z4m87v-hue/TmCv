@@ -17,6 +17,8 @@ def run():
         signal.signal(sig, lambda *_: stop.set())
     init_db()
     workflow.recover_interrupted()
+    from jobs import startup_search_check
+    threading.Thread(target=startup_search_check, daemon=True).start()
     while not stop.is_set():
         try:
             config = workflow.settings()

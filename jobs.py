@@ -43,6 +43,12 @@ class JobSearchError(Exception):
     pass
 
 
+class SearchResults(list):
+    def __init__(self, rows=(), diagnostics=()):
+        super().__init__(rows)
+        self.diagnostics = list(diagnostics)
+
+
 def direct_url(value):
     """Accept only HTTPS URLs on approved employer/recruitment hosts."""
     try:
@@ -199,37 +205,49 @@ def _inspect(result, location):
             'salary_verified': int(low is not None)}
 
 
-def search_jobs(query, location, count=20):
-    """Search the web, then read employer JobPosting data. No paid API key needed."""
-    key = (query[:150], location[:100], min(max(count, 1), 20))
-    with _LOCK:
-        cached = _CACHE.get(key)
-        if cached and time.monotonic() - cached[0] < 600:
-            return [dict(row) for row in cached[1]]
-    # General web search first; a short public-employer query provides a fallback.
+def general_web_search(query, location, count=20):
+    """Optional general-engine discovery. Official boards are the default source."""
     engine = DDGS(timeout=8)
-    results = []
-    failed = False
-    for terms in (query_text(query, location), f'{query[:150]} {location[:100]} jobs site:gov.uk'):
-        try:
-            results = engine.text(terms, region='uk-en', max_results=min(max(count, 1), 20),
-                                  backend=os.getenv('WEB_SEARCH_BACKEND', 'bing,duckduckgo'))
-            if any(direct_url(row.get('href', '')) for row in results):
-                break
-        except Exception:
-            failed = True
-    if not results and failed:
-        raise JobSearchError('Web search is temporarily unavailable. Use Open web search below or try again shortly.')
-    seen, candidates = set(), []
+    results = engine.text(query_text(query, location), region='uk-en', max_results=min(count, 20),
+                          backend=os.getenv('WEB_SEARCH_BACKEND', 'bing,duckduckgo'))
+    candidates, seen = [], set()
     for result in results:
         url = direct_url(result.get('href', ''))
         if url and url not in seen:
             seen.add(url)
             candidates.append(result)
     with ThreadPoolExecutor(max_workers=4) as pool:
-        jobs = [job for job in pool.map(lambda r: _inspect(r, location), candidates[:8]) if job]
-    with _LOCK:
-        if len(_CACHE) >= 100:
-            _CACHE.clear()
-        _CACHE[key] = (time.monotonic(), jobs)
-    return [dict(row) for row in jobs]
+        return [job for job in pool.map(lambda r: _inspect(r, location), candidates[:8]) if job]
+
+
+def search_jobs(query, location, count=20):
+    """Read official employer vacancy pages. Return provider status separately."""
+    from employer_web import search
+    rows, diagnostics = search(query[:150], location[:100], min(max(count, 1), 20))
+    if os.getenv('ENABLE_GENERAL_WEB_SEARCH') == '1':
+        try:
+            rows.extend(general_web_search(query, location, count))
+            diagnostics.append({'source': 'General web engines', 'status': 'available'})
+        except Exception:
+            diagnostics.append({'source': 'General web engines', 'status': 'unavailable'})
+    available = [d for d in diagnostics if d['status'] == 'available']
+    applicable = [d for d in diagnostics if d['status'] != 'outside selected area']
+    if not available:
+        if not applicable:
+            raise JobSearchError('No connected employer source covers this location yet. Choose Nottingham or United Kingdom, or use Open web search.')
+        raise JobSearchError('The connected employer websites could not be reached. This is a source failure, not a result of your salary filter. Try Open web search.')
+    unique = {r['source_id']: r for r in rows}
+    return SearchResults(unique.values(), diagnostics)
+
+
+def startup_search_check():
+    """Read-only production check of the same search used by the dashboard."""
+    import logging
+    for query, location in [('legal administrator', 'Nottingham'), ('revenues officer', 'United Kingdom')]:
+        try:
+            rows = search_jobs(query, location, count=6)
+            logging.getLogger('applications').info('Live search check: location=%s roles=%s salary_verified=%s sources=%s',
+                location, len(rows), sum(bool(r['salary_verified']) for r in rows),
+                json.dumps(rows.diagnostics, sort_keys=True))
+        except Exception as exc:
+            logging.getLogger('applications').warning('Live search check failed: location=%s error=%s', location, str(exc))

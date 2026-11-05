@@ -46,30 +46,26 @@ def test_expired_unreadable_agency_and_aggregator_are_excluded(monkeypatch):
     assert jobs._inspect({'href': URL, 'title': 'On behalf of our client'}, 'UK') is None
 
 
-def test_engine_failure_is_clear_and_does_not_call_adzuna(monkeypatch):
-    jobs._CACHE.clear()
-    engine = Mock()
-    engine.text.side_effect = RuntimeError('provider unavailable')
-    monkeypatch.setattr(jobs, 'DDGS', lambda **kwargs: engine)
-    with pytest.raises(jobs.JobSearchError, match='Open web search'):
-        jobs.search_jobs('paralegal', 'London')
-    assert '-site:adzuna.co.uk' in engine.text.call_args_list[0].args[0]
+def test_general_engine_failure_does_not_break_official_search(monkeypatch):
+    import employer_web
+    monkeypatch.delenv('ENABLE_GENERAL_WEB_SEARCH', raising=False)
+    engine = Mock(side_effect=RuntimeError('provider unavailable'))
+    monkeypatch.setattr(jobs, 'DDGS', engine)
+    job = {'source_id': 'web:1', 'title': 'Legal Assistant'}
+    monkeypatch.setattr(employer_web, 'search', lambda *args: ([job], [{'source': 'Council', 'status': 'available'}]))
+    assert jobs.search_jobs('paralegal', 'Nottingham')[0] == job
+    engine.assert_not_called()
 
 
-def test_cache_dedup_and_external_hosts_not_fetched(monkeypatch):
-    jobs._CACHE.clear()
-    engine = Mock()
-    engine.text.return_value = [{'href': URL, 'title': 'Role'}, {'href': URL, 'title': 'Duplicate'},
-                               {'href': 'https://www.adzuna.co.uk/jobs/details/123', 'title': 'Aggregator'}]
-    monkeypatch.setattr(jobs, 'DDGS', lambda **kwargs: engine)
-    reader = Mock(return_value=page(posting()))
-    monkeypatch.setattr(jobs, 'fetch_page', reader)
-    first = jobs.search_jobs('legal', 'London')
-    first[0]['title'] = 'Changed'
-    second = jobs.search_jobs('legal', 'London')
-    assert second[0]['title'] == 'Legal administrator'
-    reader.assert_called_once_with(URL)
-    engine.text.assert_called_once()
+def test_provider_failure_differs_from_no_matching_jobs(monkeypatch):
+    import employer_web
+    monkeypatch.delenv('ENABLE_GENERAL_WEB_SEARCH', raising=False)
+    monkeypatch.setattr(employer_web, 'search', lambda *args: ([], [{'source': 'Council', 'status': 'unavailable'}]))
+    with pytest.raises(jobs.JobSearchError, match='source failure'):
+        jobs.search_jobs('paralegal', 'Nottingham')
+    monkeypatch.setattr(employer_web, 'search', lambda *args: ([], [{'source': 'Council', 'status': 'available', 'listed': 80}]))
+    result = jobs.search_jobs('paralegal', 'Nottingham')
+    assert result == [] and result.diagnostics[0]['listed'] == 80
 
 
 def test_redirect_to_private_or_unapproved_host_is_not_followed(monkeypatch):
