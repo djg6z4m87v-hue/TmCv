@@ -110,3 +110,27 @@ Set a strong `CRON_SECRET` in your hosting environment. Configure an external sc
 The dashboard displays application deadlines due within seven days and overdue deadlines. For optional email notifications set `ALERT_EMAIL_TO`, `SMTP_HOST`, `SMTP_PORT` (defaults to 465), `SMTP_FROM`, and, if needed, `SMTP_USER` and `SMTP_PASSWORD`. Notifications are sent at most once per day after successful SMTP delivery. Emails are not sent if SMTP settings are missing. Configure a persistent database to retain notification state and tracked jobs. Use your email provider's supported SMTP credentials and HTTPS for the scheduler.
 
 **Deployment caution:** A public-facing single-user application should be hosted privately with strong credentials. The original codebase uses Basic Auth and has no CSRF protection; add CSRF protection before using it for sensitive production workflows. Automated scraping of employer websites and automatic application submissions are not implemented.
+
+## Install on iPhone
+
+Deploy this version to your existing HTTPS Flask host first. The GitHub repository
+URL is source code, not the address to install.
+
+1. Open the deployed Careerpilot dashboard in Safari and sign in if prompted.
+2. Tap **Share → Add to Home Screen**.
+3. Leave **Open as Web App** enabled if offered, then tap **Add**.
+4. Open the Careerpilot icon. The Home Screen app may ask you to sign in again.
+
+The app includes a manifest, iPhone icon, standalone launch mode, safe-area layout,
+and an offline/reconnect screen. It does not require an App Store account.
+Searching, reading saved applications, downloading letters and saving changes
+require a connection to the server. No writes are queued offline. Only public
+styles, icons and the reconnect page are cached; CVs and application data are not
+stored by the service worker. If registration is blocked or the server is not
+using HTTPS, offline support will not be available.
+
+Keep the existing hosting environment variables and persistent database when
+redeploying. Static assets now live in `static/`; deploy the entire folder with
+`app.py` and the rest of the source. Source files and databases are no longer
+served by Flask's static route. This update does not add push notifications or
+background job searches on the iPhone.

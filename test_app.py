@@ -60,3 +60,35 @@ def test_employer_save_and_deduplicate(client):
 def test_employer_rejects_non_https(client):
     r = client.post('/employer-jobs/add', data={'title':'Role','company':'Employer','url':'http://example.com'},follow_redirects=True)
     assert b'valid HTTPS' in r.data
+
+
+def test_iphone_install_assets_and_private_data(client, monkeypatch):
+    import struct
+    manifest = client.get('/manifest.webmanifest')
+    assert manifest.status_code == 200
+    assert manifest.mimetype == 'application/manifest+json'
+    data = manifest.json
+    assert data['display'] == 'standalone'
+    assert data['start_url'] == '/'
+    for icon in data['icons']:
+        response = client.get(icon['src'])
+        assert response.status_code == 200
+        width, height = struct.unpack('>II', response.data[16:24])
+        assert f'{width}x{height}' == icon['sizes']
+    home = client.get('/')
+    assert b'apple-touch-icon' in home.data
+    assert b'Add to Home Screen' in home.data
+    assert home.headers['Cache-Control'] == 'no-store'
+    worker = client.get('/sw.js')
+    assert worker.status_code == 200
+    assert worker.headers['Service-Worker-Allowed'] == '/'
+    assert worker.headers['Cache-Control'] == 'no-cache'
+    assert client.get('/static/offline.html').status_code == 200
+    # Installation assets remain available while account information stays protected.
+    monkeypatch.setenv('APP_USERNAME', 'owner')
+    monkeypatch.setenv('APP_PASSWORD', 'test-password')
+    assert client.get('/').status_code == 401
+    assert client.get('/manifest.webmanifest').status_code == 200
+    assert client.get('/sw.js').status_code == 200
+    assert client.get('/static/app.py').status_code == 404
+    assert client.get('/static/careerpilot.db').status_code == 404

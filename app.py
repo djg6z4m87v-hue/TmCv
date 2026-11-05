@@ -3,7 +3,7 @@ import secrets
 from functools import wraps
 from urllib.parse import urlencode, urlparse
 import hashlib
-from flask import Flask, render_template, request, redirect, url_for, flash, Response
+from flask import Flask, render_template, request, redirect, url_for, flash, Response, send_from_directory
 from database import connect, init_db
 from jobs import search_jobs, JobSearchError, CATEGORIES, LOCATIONS
 from matching import score, DEFAULT_CV
@@ -16,7 +16,7 @@ from monitoring import upcoming_deadlines, notify_deadlines
 app = Flask(
     __name__,
     template_folder=".",
-    static_folder=".",
+    static_folder="static",
     static_url_path="/static"
 )
 
@@ -39,6 +39,26 @@ def require_auth(fn):
                 return Response('Authentication required', 401, {'WWW-Authenticate': 'Basic realm="Careerpilot"'})
         return fn(*args, **kwargs)
     return wrapper
+
+# Public installation assets contain no account or application data.
+@app.get('/manifest.webmanifest')
+def web_manifest():
+    return send_from_directory(app.static_folder, 'manifest.webmanifest',
+                               mimetype='application/manifest+json')
+
+@app.get('/sw.js')
+def service_worker():
+    response = send_from_directory(app.static_folder, 'sw.js',
+                                   mimetype='application/javascript')
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['Service-Worker-Allowed'] = '/'
+    return response
+
+@app.after_request
+def protect_private_responses(response):
+    if request.endpoint not in {'static', 'web_manifest', 'service_worker', 'health'}:
+        response.headers['Cache-Control'] = 'no-store'
+    return response
 
 @app.get('/health')
 def health():
