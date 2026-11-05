@@ -6,7 +6,7 @@ import json
 import os
 import re
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 import requests
 from cryptography.fernet import Fernet, InvalidToken
@@ -69,7 +69,8 @@ def canonical_url(value):
     path = p.path.rstrip('/')
     if p.hostname in LEVER_HOSTS:
         path = re.sub(r'/apply$', '', path)
-    return urlunparse(('https', p.hostname.lower(), path, '', '', ''))
+    query = '' if p.hostname in LEVER_HOSTS else urlencode([(k, v) for k,v in parse_qsl(p.query, keep_blank_values=True) if not k.lower().startswith(('utm_', 'fbclid', 'gclid'))])
+    return urlunparse(('https', p.hostname.lower(), path, '', query, ''))
 
 
 def lever_url(value):
@@ -155,7 +156,7 @@ def save_cv(name, content):
 def profile_fingerprint(config=None):
     config = config or settings()
     doc = cv_document()
-    return digest({'profile': profile(config), 'cv_sha': doc['sha256'] if doc else None})
+    return digest({'profile': profile(config), 'cv_sha': doc['sha256'] if doc else None, 'cv_text': config.get('cv_text', '')})
 
 
 def eligibility(app, config=None):
@@ -191,11 +192,16 @@ def prepare(app_id, http=requests):
         record(app_id, 'Needs input', reason)
         return
     key = ai_key(config)
-    if config.get('ai_consent') != '1':
-        record(app_id, 'Needs input', 'Authorise sending your CV and vacancy details to OpenAI in setup before preparing materials.')
-        return
-    if not key:
-        record(app_id, 'Needs input', 'Connect your AI API key in setup to tailor the application.')
+    if not key or config.get('ai_consent') != '1':
+        from cover_letters import draft
+        try:
+            letter = draft(app, profile(config))
+            with connect() as db:
+                db.execute("UPDATE applications SET cover_letter=?,materials_hash=?,profile_hash=?,approved_hash='' WHERE id=?",
+                           (letter, digest(letter), profile_fingerprint(config), app_id))
+            record(app_id, 'Needs input', 'CV-based draft prepared without AI. Review the letter and use Open & autofill, or connect AI for a fuller suitability assessment.')
+        except ValueError as exc:
+            record(app_id, 'Needs input', str(exc))
         return
     p = profile(config)
     instruction = '''You prepare UK job applications. Return only JSON with cover_letter (string), suitable (boolean), missing_information (array of strings), and rationale (string).
@@ -292,9 +298,7 @@ def begin_submission(app_id):
 
 def worker_once(submitter=None):
     config = settings()
-    if config.get('automation_enabled') != '1':
-        return False
-    claim = claim_next(allow_ready=not submission_limit_reached(config))
+    claim = claim_next(allow_ready=config.get('automation_enabled') == '1' and not submission_limit_reached(config))
     if not claim:
         return False
     app_id, state = claim
@@ -344,6 +348,8 @@ def discover():
     matches, errors = {}, []
     # One relevant query per category keeps each scheduled run bounded.
     for category, queries in CATEGORIES.items():
+        if not queries:
+            continue
         try:
             for job in search_jobs(queries[0], 'United Kingdom', count=30):
                 if not job.get('salary_verified') or job.get('salary_min') is None or job['salary_min'] < minimum:
@@ -361,8 +367,6 @@ def discover():
             row = db.execute('SELECT id FROM jobs WHERE source_id=?', (job['source_id'],)).fetchone()
         try:
             app_id = enqueue(row['id'])
-            if not lever_url(job['url']) and get_application(app_id)['state'] == 'Queued':
-                record(app_id, 'Needs input', 'Open the vacancy and add its direct employer application link to continue.')
             queued += 1
         except ValueError:
             continue

@@ -10,6 +10,10 @@ def tokens(text):
     return {w for w in re.findall(r'[a-z]{3,}', (text or '').lower()) if w not in STOP}
 
 def score(job, cv=DEFAULT_CV):
+    # Keyword overlap is a shortlist signal, never a claim of meeting essentials.
+    title = job.get('title') or ''
+    if re.search(r'\b(senior|head|director|qualified solicitor|legal counsel|barrister)\b', title, re.I) and not re.search(r'\b(senior|head|director|qualified solicitor|legal counsel|barrister)\b', cv, re.I):
+        return 0
     cv_words = tokens(cv)
     target = tokens((job.get('title') or '') + ' ' + (job.get('description') or '')[:2500])
     if not target:

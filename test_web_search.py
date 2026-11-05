@@ -3,6 +3,12 @@ from unittest.mock import Mock
 import pytest
 import jobs
 
+@pytest.fixture(autouse=True)
+def no_live_feeds(monkeypatch):
+    import employer_feeds
+    monkeypatch.setattr(employer_feeds, 'search_boards', lambda *args: ([], []))
+
+
 URL = 'https://jobs.nhs.uk/candidate/jobadvert/role-123?language=en'
 
 
@@ -48,7 +54,7 @@ def test_expired_unreadable_agency_and_aggregator_are_excluded(monkeypatch):
 
 def test_general_engine_failure_does_not_break_official_search(monkeypatch):
     import employer_web
-    monkeypatch.delenv('ENABLE_GENERAL_WEB_SEARCH', raising=False)
+    monkeypatch.setenv('ENABLE_GENERAL_WEB_SEARCH', '0')
     engine = Mock(side_effect=RuntimeError('provider unavailable'))
     monkeypatch.setattr(jobs, 'DDGS', engine)
     job = {'source_id': 'web:1', 'title': 'Legal Assistant'}
@@ -59,7 +65,7 @@ def test_general_engine_failure_does_not_break_official_search(monkeypatch):
 
 def test_provider_failure_differs_from_no_matching_jobs(monkeypatch):
     import employer_web
-    monkeypatch.delenv('ENABLE_GENERAL_WEB_SEARCH', raising=False)
+    monkeypatch.setenv('ENABLE_GENERAL_WEB_SEARCH', '0')
     monkeypatch.setattr(employer_web, 'search', lambda *args: ([], [{'source': 'Council', 'status': 'unavailable'}]))
     with pytest.raises(jobs.JobSearchError, match='source failure'):
         jobs.search_jobs('paralegal', 'Nottingham')

@@ -150,6 +150,8 @@ def register(app, require_auth):
                         flash('Prepare the application again after changing its vacancy description.', 'error')
                         return redirect(url_for('application_dashboard'))
                     db.execute('UPDATE jobs SET description=? WHERE id=?', (description, row['job_id']))
+                    if action == 'prepare':
+                        db.execute("UPDATE applications SET cover_letter='',profile_hash='',approved_hash='' WHERE id=?", (app_id,))
                 if request.form.get('salary_confirmed'):
                     try:
                         salary = int(request.form.get('salary_min', '0'))

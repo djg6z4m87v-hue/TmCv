@@ -3,9 +3,12 @@ import secrets
 from functools import wraps
 from urllib.parse import urlencode, urlparse
 import hashlib
+import json
+from pathlib import Path
+from urllib.parse import quote
 from flask import Flask, render_template, request, redirect, url_for, flash, Response, send_from_directory
 from database import connect, init_db
-from jobs import search_jobs, JobSearchError, CATEGORIES, LOCATIONS, browser_search_url
+from jobs import search_jobs, JobSearchError, CATEGORIES, LOCATIONS, browser_search_url, matching_queries
 from matching import score, DEFAULT_CV
 from employer_feeds import configured_boards, fetch_board, relevant, FeedError
 from public_feeds import configured_public_feeds, fetch_public_feed, PublicFeedError
@@ -66,7 +69,7 @@ def health():
 
 @app.get('/')
 @require_auth
-def home(web_results=None, web_query='legal administrator', web_location='Nottingham', selected_category='Legal administration', search_diagnostics=None):
+def home(web_results=None, web_query='legal administrator', web_location='Nottingham', selected_category='Best matches for my CV', search_diagnostics=None):
     with connect() as db:
         settings = {r['key']: r['value'] for r in db.execute('SELECT key,value FROM settings')}
         status = request.args.get('status', '')
@@ -114,7 +117,8 @@ def import_jobs():
     errors = []
     candidates = {}
     diagnostics = {}
-    for query in CATEGORIES[category]:
+    queries = CATEGORIES[category] or matching_queries(cv)
+    for query in queries:
         try:
             results = search_jobs(query, location)
             for diagnostic in getattr(results, 'diagnostics', []):
@@ -133,10 +137,14 @@ def import_jobs():
                 j.setdefault('deadline', '')
                 j['category'] = category
                 j['match_score'] = score(j, cv)
+                if category == 'Best matches for my CV' and j['match_score'] < 25:
+                    continue
                 cur = db.execute('''INSERT OR IGNORE INTO jobs
                     (source_id,title,company,location,category,url,description,salary_min,salary_max,salary_verified,match_score,deadline)
                     VALUES (:source_id,:title,:company,:location,:category,:url,:description,:salary_min,:salary_max,:salary_verified,:match_score,:deadline)''', j)
                 added += cur.rowcount
+    for candidate in candidates.values():
+        candidate['match_score'] = score(candidate, cv)
     wider = any(j.get('search_scope') == 'UK-wide alternative' for j in candidates.values())
     if wider:
         flash('No matching local adverts were found in the connected sources. Showing wider UK alternatives; select United Kingdom to save eligible matches.', 'success')
@@ -144,7 +152,7 @@ def import_jobs():
         flash('Search could not complete. ' + ' '.join(dict.fromkeys(errors)), 'error')
     else:
         flash(f'Found {len(candidates)} live employer adverts, including related roles; saved {added} new jobs meeting your salary minimum.', 'success')
-    return home(web_results=list(candidates.values()), web_query=CATEGORIES[category][0], web_location=location, selected_category=category, search_diagnostics=list(diagnostics.values()))
+    return home(web_results=sorted(candidates.values(), key=lambda j: j['match_score'], reverse=True), web_query=queries[0], web_location=location, selected_category=category, search_diagnostics=list(diagnostics.values()))
 
 @app.get('/web-search')
 @require_auth
@@ -153,7 +161,10 @@ def open_web_search():
     location = request.args.get('location', 'Nottingham')
     if category not in CATEGORIES or location not in LOCATIONS:
         return 'Choose a valid category and location.', 400
-    return redirect(browser_search_url(CATEGORIES[category][0], location), code=303)
+    with connect() as db:
+        saved = db.execute("SELECT value FROM settings WHERE key='cv_text'").fetchone()
+    queries = CATEGORIES[category] or matching_queries(saved['value'] if saved and saved['value'] else DEFAULT_CV)
+    return redirect(browser_search_url(queries[0], location), code=303)
 
 @app.post('/jobs/<int:job_id>/update')
 @require_auth
@@ -176,12 +187,61 @@ def cover_letter(job_id):
         job = db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
     if job is None:
         return 'Job not found', 404
-    # Draft only: no fabricated employer projects or automated submissions.
-    letter = f'''Dear Hiring Team,\n\nI am writing to apply for the {job['title']} position at {job['company']}. I hold a 2:1 LLB from the University of Derby and have experience in legal administration, debt recovery, case management and client communication.\n\nAt Flint Bishop Solicitors, I supported case administration, correspondence, accurate records and reporting deadlines. Through supervised legal advice work, I developed research, interviewing and written communication skills across a range of matters. I would bring this attention to detail and client-focused approach to your team.\n\nI am interested in {job['company']} because [add a specific, verified reason based on the organisation's work or projects]. My experience would be useful in [connect your experience to a requirement from the job description].\n\nThank you for considering my application.\n\nYours faithfully,\n[Your name]'''
+    import applications as workflow
+    from cover_letters import draft
+    config = workflow.settings()
+    with connect() as db:
+        prepared = db.execute('SELECT * FROM applications WHERE job_id=?', (job_id,)).fetchone()
+    if prepared and prepared['cover_letter'] and prepared['profile_hash'] == workflow.profile_fingerprint(config):
+        letter = prepared['cover_letter']
+    else:
+        try:
+            letter = draft(dict(job), workflow.profile(config))
+        except ValueError as exc:
+            flash(str(exc), 'error')
+            return redirect(url_for('application_dashboard'))
     return Response(letter, mimetype='text/plain; charset=utf-8', headers={'Content-Disposition': f'attachment; filename="careerpilot-letter-{job_id}.txt"'})
 
 
+
+@app.get('/jobs/<int:job_id>/autofill')
+@require_auth
+def autofill_job(job_id):
+    import applications as workflow
+    from cover_letters import draft
+    with connect() as db:
+        row = db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+        prepared = db.execute('SELECT * FROM applications WHERE job_id=?', (job_id,)).fetchone()
+    if row is None:
+        return 'Job not found', 404
+    job = dict(row)
+    applicant = workflow.profile()
+    try:
+        if prepared and prepared['cover_letter'] and prepared['profile_hash'] == workflow.profile_fingerprint():
+            letter = prepared['cover_letter']
+        else:
+            letter = draft(job, applicant)
+    except ValueError as exc:
+        flash(str(exc), 'error')
+        return redirect(url_for('application_dashboard'))
+    if prepared:
+        job['url'] = prepared['canonical_url']
+    host = urlparse(job['url']).hostname
+    if urlparse(job['url']).scheme != 'https' or not host:
+        return 'Save a valid HTTPS employer application link first.', 400
+    parts = applicant.get('name', '').split()
+    data = {k: applicant.get(k, '') for k in ('name','email','phone','location','current_company','linkedin')}
+    data.update(first=parts[0] if parts else '', last=' '.join(parts[1:]),
+                host=host, letter=letter, answers=applicant.get('answers', {}))
+    script = Path(app.static_folder, 'autofill.js').read_text()
+    bookmarklet = 'javascript:' + quote('(function(){' + script + ';careerpilotFill(' + json.dumps(data) + ');})();', safe='')
+    return render_template('autofill.html', job=job, host=host, letter=letter, bookmarklet=bookmarklet)
+
+
 EMPLOYERS = {
+    'Brady Solicitors': 'bradysolicitors.com',
+    'Chattertons': 'chattertons.com',
+    'Potter Clarkson': 'potterclarkson.com',
     'Nottingham City Council': 'nottinghamcity.gov.uk',
     'Nottinghamshire County Council': 'nottinghamshire.gov.uk',
     'Derby City Council': 'derby.gov.uk',
