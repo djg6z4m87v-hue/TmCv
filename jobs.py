@@ -4,6 +4,7 @@ import html
 import ipaddress
 import json
 import os
+import re
 import socket
 import threading
 import time
@@ -17,18 +18,20 @@ from lxml import html as html_parser
 from lxml.etree import ParserError
 
 CATEGORIES = {
+    'Best matches for my CV': [],
     'Legal administration': ['legal administrator', 'legal support officer'],
     'Paralegal / casework': ['paralegal', 'legal caseworker'],
     'Compliance': ['compliance officer', 'compliance coordinator'],
     'Contracts': ['contracts administrator', 'contracts officer'],
     'Investigations': ['investigations officer', 'regulatory officer'],
     'Revenues / recovery': ['revenues officer', 'debt recovery officer'],
+    'Business administration': ['administration coordinator', 'operations assistant'],
     'Public sector': ['council administrator', 'public sector caseworker'],
 }
 LOCATIONS = ['Nottingham', 'Derby', 'Leicester', 'Birmingham', 'London', 'United Kingdom']
 # Employer domains and employer-hosted recruitment platforms. No job aggregators.
 EMPLOYER_DOMAINS = (
-    'gov.uk', 'jobs.nhs.uk', 'nhs.scot', 'trac.jobs', 'jobs.lever.co',
+    'ashbyhq.com', 'workable.com', 'smartrecruiters.com', 'gov.uk', 'jobs.nhs.uk', 'nhs.scot', 'trac.jobs', 'jobs.lever.co',
     'jobs.eu.lever.co', 'boards.greenhouse.io', 'job-boards.greenhouse.io',
     'myworkdayjobs.com', 'brownejacobson.com', 'flintbishop.co.uk',
     'geldards.com', 'bradysolicitors.com', 'chattertons.com', 'potterclarkson.com',
@@ -50,14 +53,22 @@ class SearchResults(list):
 
 
 def direct_url(value):
-    """Accept only HTTPS URLs on approved employer/recruitment hosts."""
+    """Accept public HTTPS employer candidates; fetch_page validates DNS and redirects."""
     try:
         p = urlparse(value)
         host = (p.hostname or '').lower()
         if p.scheme != 'https' or p.username or p.password or p.port not in (None, 443):
             return None
-        if not any(host == d or host.endswith('.' + d) for d in EMPLOYER_DOMAINS):
+        blocked = ('adzuna.co.uk', 'adzuna.com', 'indeed.com', 'indeed.co.uk', 'reed.co.uk',
+                   'totaljobs.com', 'cv-library.co.uk', 'linkedin.com', 'glassdoor.co.uk', 'glassdoor.com')
+        if any(host == d or host.endswith('.' + d) for d in blocked) or not host or '.' not in host:
             return None
+        try:
+            if not ipaddress.ip_address(host).is_global:
+                return None
+        except ValueError:
+            if host.endswith(('.local', '.internal', '.test')) or '%' in host:
+                return None
         # Keep application query identifiers; remove fragments only.
         return urlunparse(('https', host, p.path or '/', '', p.query, ''))
     except (TypeError, ValueError):
@@ -195,6 +206,11 @@ def _inspect(result, location):
         if isinstance(address, dict):
             location = ', '.join(str(address.get(k) or '') for k in ('addressLocality', 'addressRegion') if address.get(k)) or location
         low, high = _salary(post)
+        if low is None:
+            from employer_web import annual_salary
+            salary_line = re.search(r'(?:salary|pay range)\s*[:–-]?\s*(£[^.;\n]{0,100}(?:per annum|per year|annually|annual))', description, re.I)
+            if salary_line:
+                low, high = annual_salary(salary_line.group(1))
     except (ValueError, TypeError, KeyError, ParserError):
         return None
     if any(word in (title + ' ' + company + ' ' + description).lower() for word in EXCLUDED):
@@ -223,8 +239,15 @@ def general_web_search(query, location, count=20):
 def search_jobs(query, location, count=20):
     """Read official employer vacancy pages. Return provider status separately."""
     from employer_web import search
-    rows, diagnostics = search(query[:150], location[:100], min(max(count, 1), 20))
-    if os.getenv('ENABLE_GENERAL_WEB_SEARCH') == '1':
+    from employer_feeds import search_boards
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        public = pool.submit(search, query[:150], location[:100], min(max(count, 1), 20))
+        private = pool.submit(search_boards, query[:150], location[:100], min(max(count, 1), 20))
+        rows, diagnostics = public.result()
+        private_rows, private_diagnostics = private.result()
+    rows.extend(private_rows)
+    diagnostics.extend(private_diagnostics)
+    if os.getenv('ENABLE_GENERAL_WEB_SEARCH', '1') == '1':
         try:
             rows.extend(general_web_search(query, location, count))
             diagnostics.append({'source': 'General web engines', 'status': 'available'})
@@ -237,8 +260,17 @@ def search_jobs(query, location, count=20):
             raise JobSearchError('No connected employer source covers this location yet. Choose Nottingham or United Kingdom, or use Open web search.')
         raise JobSearchError('The connected employer websites could not be reached. This is a source failure, not a result of your salary filter. Try Open web search.')
     unique = {r['source_id']: r for r in rows}
-    return SearchResults(unique.values(), diagnostics)
+    from matching import score, DEFAULT_CV
+    return SearchResults(sorted(unique.values(), key=lambda j: score(j, DEFAULT_CV), reverse=True), diagnostics)
 
+
+
+def matching_queries(cv):
+    """Choose search terms from CV evidence, across employer sectors."""
+    from matching import score
+    categories = [(category, queries) for category, queries in CATEGORIES.items() if queries]
+    categories.sort(key=lambda pair: score({'title': pair[0], 'description': ' '.join(pair[1])}, cv), reverse=True)
+    return [queries[0] for _, queries in categories[:3]]
 
 def startup_search_check():
     """Read-only production check of the same search used by the dashboard."""

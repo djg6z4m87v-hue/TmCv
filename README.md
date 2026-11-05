@@ -106,9 +106,9 @@ option until a direct source is connected. Searches include related role titles.
 When local sources return no matches, wider UK results are explicitly labelled and
 not automatically saved as local vacancies. Select United Kingdom to import them.
 
-The old unauthenticated search-engine scraping is disabled by default because
+General web engines may be unavailable because
 engines rejected requests from the hosting network. Optional general discovery can
-be enabled with ENABLE_GENERAL_WEB_SEARCH=1; it is not required for official sources.
+be disabled with ENABLE_GENERAL_WEB_SEARCH=0; direct employer feeds remain available.
 Each advert is read for its published salary and closing date. Expired adverts are
 excluded; missing or pro-rata salary data never passes the automatic salary filter.
 Provider failures are distinct from a successful search with no matching roles.
@@ -142,3 +142,31 @@ configured public feeds plus optional deadline notifications. SMTP uses
 Open the HTTPS dashboard in Safari, then Share → Add to Home Screen. The
 application workspace works in the Home Screen app. Browsing, downloads and
 writes require internet; no personal data or writes are cached offline.
+
+
+### Personalised search, letters and browser autofill
+
+The default search combines public-sector sources with verified Monzo, GoCardless,
+Modulr and HSPG employer feeds and general web discovery. Select **Best matches for
+my CV** to choose search terms from saved CV text. Keyword scores are shortlist
+signals: confirm essential requirements on the advert. Unknown salaries remain
+browse-only, and automatic applications retain the £27,000 minimum.
+
+Personalised letter downloads use saved applicant details and CV evidence plus the
+specific vacancy description, without placeholders or invented company projects.
+Existing current AI-prepared letters take precedence. Without an AI key, a local
+CV-based draft is available; AI preparation remains optional and requires consent.
+Queued preparation works while automatic submission is paused.
+
+**Open & autofill** supplies a private, per-vacancy browser bookmarklet with Safari
+on iPhone instructions. It opens the employer link and fills standard contact,
+cover-letter and exact saved-answer fields when the bookmark is selected there.
+It preserves existing values and leaves declarations, uploads and submission to
+the applicant. It checks the saved employer hostname. Custom controls, embedded
+cross-origin forms and sites blocking bookmarklets require manual completion.
+The existing remote worker still supports automatic submission only on Lever.
+No application is marked Submitted based on autofill.
+
+Set `ENABLE_GENERAL_WEB_SEARCH=0` to disable general engines; direct feeds remain
+available. `EMPLOYER_BOARDS_JSON` overrides the default boards. Feed results cache
+for ten minutes. Source failures appear separately from an empty set of matches.
