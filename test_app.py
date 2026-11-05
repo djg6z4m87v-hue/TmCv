@@ -9,7 +9,7 @@ def client(tmp_path, monkeypatch):
     from database import init_db
     init_db()
     from app import app
-    app.config.update(TESTING=True)
+    app.config.update(TESTING=True, CSRF_ENABLED=False)
     return app.test_client()
 
 def test_home(client):
@@ -92,3 +92,4 @@ def test_iphone_install_assets_and_private_data(client, monkeypatch):
     assert client.get('/sw.js').status_code == 200
     assert client.get('/static/app.py').status_code == 404
     assert client.get('/static/careerpilot.db').status_code == 404
+

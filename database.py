@@ -45,4 +45,44 @@ def init_db():
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS applications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER NOT NULL UNIQUE REFERENCES jobs(id),
+            canonical_url TEXT NOT NULL UNIQUE,
+            state TEXT NOT NULL DEFAULT 'Queued',
+            reason TEXT NOT NULL DEFAULT '',
+            cover_letter TEXT NOT NULL DEFAULT '',
+            materials_hash TEXT NOT NULL DEFAULT '',
+            profile_hash TEXT NOT NULL DEFAULT '',
+            approved_hash TEXT NOT NULL DEFAULT '',
+            questions TEXT NOT NULL DEFAULT '[]',
+            draft_answers TEXT NOT NULL DEFAULT '{}',
+            approved_answers TEXT NOT NULL DEFAULT '{}',
+            receipt TEXT NOT NULL DEFAULT '',
+            claim_time TEXT,
+            submit_started TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS application_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            application_id INTEGER NOT NULL REFERENCES applications(id),
+            state TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS application_documents (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            mime TEXT NOT NULL,
+            content BLOB NOT NULL,
+            sha256 TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS applications_state ON applications(state, id);
         ''')
+        columns = {r['name'] for r in db.execute('PRAGMA table_info(applications)')}
+        for name in ('draft_answers', 'approved_answers'):
+            if name not in columns:
+                db.execute(f"ALTER TABLE applications ADD COLUMN {name} TEXT NOT NULL DEFAULT '{{}}'")
+

@@ -307,8 +307,11 @@ def daily_tasks():
         results['notification_error'] = 'Notification delivery failed; check server configuration'
     return results
 
+from application_routes import register as register_application_routes
+register_application_routes(app, require_auth)
 init_db()
 
 if __name__ == '__main__':
     app.run(debug=os.getenv('FLASK_DEBUG') == '1')
+
 
