@@ -232,11 +232,11 @@ Assess essential requirements against the CV. If an essential requirement is mis
         record(app_id, 'Needs input', 'Could not prepare complete materials. Check the AI connection and try preparing again.')
 
 
-def claim_next():
+def claim_next(allow_ready=True):
     """SQLite writer lock makes claims exclusive across processes."""
     with connect() as db:
         db.execute('BEGIN IMMEDIATE')
-        row = db.execute("SELECT id,state FROM applications WHERE state IN ('Queued','Ready') ORDER BY id LIMIT 1").fetchone()
+        row = db.execute("SELECT id,state FROM applications WHERE state IN ('Queued','Ready') ORDER BY id LIMIT 1" if allow_ready else "SELECT id,state FROM applications WHERE state='Queued' ORDER BY id LIMIT 1").fetchone()
         if not row:
             return None
         new_state = 'Preparing' if row['state'] == 'Queued' else 'Submitting'
@@ -290,7 +290,7 @@ def worker_once(submitter=None):
     config = settings()
     if config.get('automation_enabled') != '1':
         return False
-    claim = claim_next()
+    claim = claim_next(allow_ready=not submission_limit_reached(config))
     if not claim:
         return False
     app_id, state = claim
@@ -363,3 +363,4 @@ def discover():
         except ValueError:
             continue
     return {'queued': queued, 'errors': errors}
+
